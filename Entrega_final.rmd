@@ -1,0 +1,354 @@
+---
+title: "Exploración de Factores de Riesgo para la Listeriosis Esporádica No Relacionada con el Embarazo en Alemania"
+output: html_document
+date: "2023-12-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+Un Estudio de
+Casos y Controles con Análisis de Regresión Logística Condicional
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidymodels)
+library(survival)
+library(fastDummies)
+library(pROC)
+library(caret)
+
+```
+Agrupamiento por Edad
+```{r}
+file_path <- "/Users/camillamassardi/Desktop/EEA/CaseControl_Listeriosis_Repos.xls" 
+
+data <- read_xls(file_path)
+table_result <- table(data$outcome, data$AC)
+print(table_result)
+```
+##Preprocesamiento 
+
+```{r}
+na_por_fila <- rowSums(is.na(data))
+na_por_columna <- colSums(is.na(data))
+# Filas con más del 50% de datos faltantes
+filas_con_mas_de_50_porcentaje_na <- which(na_por_fila > 0.5 * ncol(data))
+
+print("Filas con más del 50% de datos faltantes:")
+print(filas_con_mas_de_50_porcentaje_na)
+
+print("Número de NA por columna:")
+print(na_por_columna)
+cols_con_muchos_na <- which(na_por_columna > 200)
+print("Columnas con alto numero de datos faltantes:")
+print(cols_con_muchos_na)
+
+```
+Eliminamos las filas con mas del 50% de datos faltantes (1992, 2041) y columnas proxy, fishspec y rawmilkch porque tienen un numero elevado de datos faltantes (1982,339,620).
+
+
+```{r}
+data <- subset(data, !(rownames(data) %in% rownames(data[filas_con_mas_de_50_porcentaje_na, ])))
+
+data <- subset(data, select = -c(proxy, fishspec, rawmilkch))
+
+```
+Imputamos los valores faltantes con la moda o con el valor màs conservador
+```{r}
+# Imputar con moda
+data$AC <- ifelse(is.na(data$AC), as.character(names(sort(table(data$AC), decreasing = TRUE)[1])), data$AC)
+data$SES <- ifelse(is.na(data$SES), as.character(names(sort(table(data$SES), decreasing = TRUE)[1])), data$SES)
+data$residence <- ifelse(is.na(data$residence), as.character(names(sort(table(data$residence), decreasing = TRUE)[1])), data$residence)
+
+# Imputar con valor mas conservador
+data$IDT <- ifelse(is.na(data$IDT), 1, data$IDT)
+data$foodavoid <- ifelse(is.na(data$foodavoid), 8, data$foodavoid)
+data$ownpurch <- ifelse(is.na(data$ownpurch), 2, data$ownpurch)
+data$fampurch <- ifelse(is.na(data$fampurch), 8, data$fampurch)
+data$delservice <- ifelse(is.na(data$delservice), 8, data$delservice)
+data$assliving <- ifelse(is.na(data$assliving), 8, data$assliving)
+data$hospital <- ifelse(is.na(data$hospital), 8, data$hospital)
+data$restaurant <- ifelse(is.na(data$restaurant), 8, data$restaurant)
+
+#Imputar con 0 
+data <- replace(data, is.na(data), 0)
+
+
+```
+Averiguamos que no hayan outliers.
+```{r}
+apply(data, 2, min)
+apply(data, 2, max)
+#no hay outliers
+
+```
+
+
+```{r}
+non_numeric_vars <- names(data)[sapply(data, function(x) !is.numeric(x))]
+# Suponiendo que 'train_data' es tu conjunto de datos y 'non_numeric_vars' es la lista de variables no numéricas
+for (var in non_numeric_vars) {
+  data[[var]] <- as.numeric(data[[var]])
+}
+
+# Transformo las variables no numericas a numericas
+str(data)
+non_numeric_vars <- names(data)[sapply(data, function(x) !is.numeric(x))]
+
+```
+
+```{r}
+non_numeric_vars <- names(data)[sapply(data, function(x) !is.numeric(x))]
+# Suponiendo que 'train_data' es tu conjunto de datos y 'non_numeric_vars' es la lista de variables no numéricas
+for (var in non_numeric_vars) {
+  data[[var]] <- as.numeric(data[[var]])
+}
+
+# Transformo las variables no numericas a numericas
+str(data)
+non_numeric_vars <- names(data)[sapply(data, function(x) !is.numeric(x))]
+
+```
+
+```{r}
+non_numeric_vars <- names(data)[sapply(data, function(x) !is.numeric(x))]
+# Suponiendo que 'train_data' es tu conjunto de datos y 'non_numeric_vars' es la lista de variables no numéricas
+for (var in non_numeric_vars) {
+  data[[var]] <- as.numeric(data[[var]])
+}
+
+# Transformo las variables no numericas a numericas
+str(data)
+non_numeric_vars <- names(data)[sapply(data, function(x) !is.numeric(x))]
+
+```
+
+```{r}
+cor_matrix <- cor(data)
+
+# Filtra los valores de correlación en módulo mayores de 0.5
+high_correlation <- which(abs(cor_matrix) > 0.5 & abs(cor_matrix) < 1, arr.ind = TRUE)
+
+# Muestra las pares de variables y sus valores de correlación
+for (i in 1:nrow(high_correlation)) {
+  row_index <- high_correlation[i, 1]
+  col_index <- high_correlation[i, 2]
+  variable1 <- rownames(cor_matrix)[row_index]
+  variable2 <- colnames(cor_matrix)[col_index]
+  correlation <- cor_matrix[row_index, col_index]
+  
+  cat(sprintf("Correlation between %s and %s: %.3f\n", variable1, variable2, correlation))
+}
+
+
+```
+Variables Dummies
+```{r}
+data <- dummy_cols(data, 
+                   select_columns = c("sex", "IDT", "foodavoid", "ownpurch", "fampurch", "delservice", "assliving", "hospital", "restaurant"),
+                   remove_first_dummy = TRUE,
+                   remove_selected_columns = TRUE)
+
+# Crear variables dummy para 'SES' y 'residence'
+data <- dummy_cols(data, 
+                   select_columns = c("SES", "residence"),
+                   remove_first_dummy = TRUE,
+                   remove_selected_columns = FALSE)
+
+```
+## MODELOS
+Division en test y train. El train tendrà el 70% de los datos y test el 30%.
+Vamos a mantener el emparejamiento segun Age Category (AC)
+```{r}
+set.seed(123)
+
+data$AC <- as.factor(data$AC)
+
+index <- createDataPartition(data$AC, p = 0.7, list = FALSE)
+
+train_data <- data[index, ]
+test_data <- data[-index, ]
+
+
+```
+- modelo 1: todas las variables
+- modelo 2: variables base + variables grupos de alimento
+- modelo 3: variables base + variables puntuales de alimentos
+```{r}
+#MODELO 1
+model1 <- clogit(outcome ~ SES_2+SES_3+residence_2+residence_3+knowlis+knowtrans+GAS+meat+packmeat+salami+rawferm+delimeat+pate+ccsaus+ham+cookham+aspics+blood+mince+cookmeat+meatdisc+meatbutch+meatorg+meatmarket+fish+packfish+sushi+smokefishe+marfish+unheatfish+fishdisc+fishorg+fishmarket+fishtrav+fishown+cheese+packcheese+slicecheese+freshch+whitemoldch+bluech+redch+mozza+acidcurd+goatch+semisoftch+hardch+cheesedisc+cheesespec+cheeseorg+cheesemarket+milk+rawmilk+delisalad+rawveg+fruitsalad+sex_2+IDT_1+IDT_2+foodavoid_2+foodavoid_8+ownpurch_2+fampurch_2+delservice_2+assliving_2+hospital_2+restaurant_2+strata(AC), train_data, control = coxph.control(iter.max = 1000))
+linear_preds <- predict(model1, newdata = test_data, type = "lp")
+prob_preds1 <- plogis(linear_preds)
+
+#MODELO 2
+model2 <- clogit(outcome ~ SES_2+SES_3+residence_2+residence_3+knowlis+knowtrans+GAS+meat+cheese+delisalad+fish+sex_2+IDT_1+IDT_2+foodavoid_2+foodavoid_8+ownpurch_2+fampurch_2+delservice_2+assliving_2+hospital_2+restaurant_2+strata(AC), train_data, control = coxph.control(iter.max = 1000))
+linear_preds <- predict(model2, newdata = test_data, type = "lp")
+prob_preds2 <- plogis(linear_preds)
+
+
+#MODELO 3
+model3 <- clogit(outcome ~ SES_2+SES_3+residence_2+residence_3+knowlis+knowtrans+GAS+packmeat+salami+rawferm+delimeat+pate+ccsaus+ham+cookham+aspics+blood+mince+cookmeat+meatdisc+meatbutch+meatorg+meatmarket+packfish+sushi+smokefishe+marfish+unheatfish+fishdisc+fishorg+fishmarket+fishtrav+fishown+packcheese+slicecheese+freshch+whitemoldch+bluech+redch+mozza+acidcurd+goatch+semisoftch+hardch+cheesedisc+cheesespec+cheeseorg+cheesemarket+milk+rawmilk+rawveg+fruitsalad+sex_2+IDT_1+IDT_2+foodavoid_2+foodavoid_8+ownpurch_2+fampurch_2+delservice_2+assliving_2+hospital_2+restaurant_2+strata(AC), train_data, control = coxph.control(iter.max = 1000))
+linear_preds <- predict(model3, newdata = test_data, type = "lp")
+prob_preds3 <- plogis(linear_preds)
+
+```
+##CURVA ROC
+```{r pressure, echo=FALSE}
+roc_curve1 <- roc(test_data$outcome, prob_preds1)
+roc_curve2 <- roc(test_data$outcome, prob_preds2)
+roc_curve3 <- roc(test_data$outcome, prob_preds3)
+
+
+# Agrega leyenda
+auc1 <- auc(roc_curve1)
+auc2 <- auc(roc_curve2)
+auc3 <- auc(roc_curve3)
+
+optimal_threshold1 <- coords(roc_curve1, "best")$threshold
+optimal_threshold2 <- coords(roc_curve2, "best")$threshold
+optimal_threshold3 <- coords(roc_curve3, "best")$threshold
+
+
+
+plot(roc_curve1, col = "blue", main = "Curvas ROC", lwd = 2, cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2)
+abline(v = optimal_threshold1, col = "blue", lty = 2)
+
+lines(roc_curve2, col = "red", lwd = 2)
+abline(v = optimal_threshold2, col = "red", lty = 2)
+
+lines(roc_curve3, col = "green", lwd = 2)
+abline(v = optimal_threshold3, col = "green", lty = 2)
+
+legend("bottomright", legend = c(paste("Modelo1 (AUC=", round(auc1, 2), ",", "Umbral=",round(optimal_threshold1, 2), ")" ),
+                                 paste("Modelo2 (AUC=", round(auc2, 2), ",", "Umbral=",round(optimal_threshold2, 2), ")"  ),
+                                 paste("Modelo3 (AU =", round(auc3, 2), ",", "Umbral=",round(optimal_threshold3, 2), ")"  )),
+       col = c("blue", "red", "green"), lty = 1, cex = 0.6)
+
+
+```
+##METRICAS DE EVALUACION 
+MODELO 1
+```{r}
+pred_class1 <- prob_preds1 > round(optimal_threshold1, 2)
+pred_class2 <- prob_preds2 > round(optimal_threshold2, 2)
+pred_class3 <- prob_preds3 > round(optimal_threshold3, 2)
+#Matrices de Confusion 
+conf_matrix1 <- table(test_data$outcome, pred_class1)
+
+accuracy1 <- sum(diag(conf_matrix1)) / sum(conf_matrix1)
+precision1 <- conf_matrix1[2, 2] / sum(conf_matrix1[, 2])
+recall1 <- conf_matrix1[2, 2] / sum(conf_matrix1[2, ])
+f1_score1 <- 2 * (precision1 * recall1) / (precision1 + recall1)
+print("--MODELO1--")
+print(conf_matrix1)
+cat("Exactitud (Accuracy):", accuracy1, "\n")
+cat("Precisión (Precision):", precision1, "\n")
+cat("Recall (Sensibilidad):", recall1, "\n")
+cat("F1-Score:", f1_score1, "\n")
+
+```
+MODELO 2 
+```{r}
+conf_matrix2 <- table(test_data$outcome, pred_class2)
+
+accuracy2 <- sum(diag(conf_matrix2)) / sum(conf_matrix2)
+precision2 <- conf_matrix2[2, 2] / sum(conf_matrix2[, 2])
+recall2 <- conf_matrix2[2, 2] / sum(conf_matrix2[2, ])
+f1_score2 <- 2 * (precision2 * recall2) / (precision2 + recall2)
+print("--MODELO2--")
+print(conf_matrix2)
+cat("Exactitud (Accuracy):", accuracy2, "\n")
+cat("Precisión (Precision):", precision2, "\n")
+cat("Recall (Sensibilidad):", recall2, "\n")
+cat("F1-Score:", f1_score2, "\n")
+
+```
+MODELO 3
+```{r}
+conf_matrix3 <- table(test_data$outcome, pred_class3)
+
+accuracy3 <- sum(diag(conf_matrix3)) / sum(conf_matrix3)
+precision3 <- conf_matrix3[2, 2] / sum(conf_matrix3[, 2])
+recall3 <- conf_matrix3[2, 2] / sum(conf_matrix3[2, ])
+f1_score3 <- 2 * (precision3 * recall3) / (precision3 + recall3)
+print("--MODELO3--")
+print(conf_matrix3)
+cat("Exactitud (Accuracy):", accuracy3, "\n")
+cat("Precisión (Precision):", precision3, "\n")
+cat("Recall (Sensibilidad):", recall3, "\n")
+cat("F1-Score:", f1_score3, "\n")
+
+```
+##OBJETIVOS 
+1. Prever la presencia o ausencia de casos de listeriosis a partir de las variables recopiladas en el estudio, teniendo en cuenta la agrupación por edad, facilitando la identificación de los factores de riesgo más significativos asociados con la incidencia de la enfermedad. 
+2. Evaluar la asociación entre la infección por listeria y la presencia de enfermedades autoinmunes. 
+3. Analizar específicamente la relación entre el rango etario y la probabilidad de contraer listeriosis. Esta evaluación ayudará a entender el impacto de esta variable en particular. 
+4. Explorar la existencia de tendencias o patrones en la incidencia de listeriosis en relación con diferentes grupos de alimentos. Este análisis contribuirá a discernir posibles asociaciones entre la enfermedad y ciertos tipos de alimentos. 
+5. Determinar la asociación entre el conocimiento previo de la listeriosis y el riesgo de infección. 
+
+
+Para ese análisis vamos a usar el modelo 3 porque es el modelo con mayor accuracy (total de los casos correctamentes identificados por el modelo)
+```{r}
+# Coeficientes Modelo 3
+coefs3 <- coef(model3)
+data_coef_3 <- data.frame(variable = names(coefs3), coeficiente = coefs3)
+ggplot(data_coef_3, aes(x = variable, y = coeficiente, fill = variable)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Coeficientes Modelo 3",
+       x = "Variables Predictoras",
+       y = "Coeficientes") +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90))+
+  theme(axis.text.x = element_text(size = 6.5))
+
+```
+Relación entre Rango Etario y Probabilidad de Listeriosis
+```{r}
+datos_con_probabilidades_3 <- cbind(test_data, Probabilidad_Listeriosis = prob_preds3)
+tabla_resumen_3 <- table(datos_con_probabilidades_3$AC, datos_con_probabilidades_3$Probabilidad_Listeriosis > 0.5)
+print(tabla_resumen_3)
+ggplot(datos_con_probabilidades_3, aes(x = AC, y = Probabilidad_Listeriosis)) +
+  geom_boxplot() +
+  labs(title = "Relación entre Rango Etario y Probabilidad de Listeriosis",
+       x = "Rango Etario",
+       y = "Probabilidad de Listeriosis")
+
+```
+Consumo de alimentos y Listeriosis
+```{r}
+df <- data.frame(
+  listeriosis = datos_con_probabilidades_3$Probabilidad_Listeriosis > 0.5,
+  carnes = datos_con_probabilidades_3$meat,
+  pescados = datos_con_probabilidades_3$fish,
+  ensaladas = datos_con_probabilidades_3$delisalad,
+  quesos = datos_con_probabilidades_3$cheese
+)
+
+df_listeriosis_true <- filter(df, listeriosis == TRUE)
+
+table(test_data$outcome)
+table(df_listeriosis_true$listeriosis, df_listeriosis_true$carnes)
+table(df_listeriosis_true$listeriosis, df_listeriosis_true$pescados)
+table(df_listeriosis_true$listeriosis, df_listeriosis_true$ensaladas)
+table(df_listeriosis_true$listeriosis, df_listeriosis_true$quesos)
+
+
+datos_melted <- reshape2::melt(df_listeriosis_true, id.vars = "listeriosis")
+
+# Crear un gráfico de barras apiladas
+ggplot(datos_melted, aes(x = variable, fill = factor(value))) +
+  geom_bar(stat = "count", position = "stack") +
+  labs(title = "Consumo de alimentos y Listeriosis",
+       x = "Tipo de alimento",
+       y = "Número de pacientes") +
+  scale_fill_manual(values = c("0" = "skyblue", "1" = "salmon")) +
+  theme_minimal()
+
+```
+
+
